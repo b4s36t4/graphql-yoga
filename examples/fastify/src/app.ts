@@ -1,4 +1,4 @@
-import { createServer } from '@graphql-yoga/node'
+import { createYoga } from '@graphql-yoga/common'
 import fastify, { FastifyReply, FastifyRequest } from 'fastify'
 
 export function buildApp(logging = true) {
@@ -11,7 +11,7 @@ export function buildApp(logging = true) {
     },
   })
 
-  const graphQLServer = createServer<{
+  const graphQLServer = createYoga<{
     req: FastifyRequest
     reply: FastifyReply
   }>({

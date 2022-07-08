@@ -1,5 +1,5 @@
 import { getIntrospectionQuery } from 'graphql'
-import { createServer } from '@graphql-yoga/common'
+import { createYoga } from '@graphql-yoga/common'
 import { Request } from 'cross-undici-fetch'
 
 const listenerMap = new Map<string, Set<EventListenerOrEventListenerObject>>()
@@ -36,12 +36,12 @@ function trigger(eventName: string, data: any) {
 }
 
 describe('Service worker', () => {
-  const server = createServer()
+  const yoga = createYoga()
   beforeEach(() => {
-    server.start()
+    self.addEventListener('fetch', yoga)
   })
   afterEach(() => {
-    server.stop()
+    self.removeEventListener('fetch', yoga)
   })
   it('should add fetch listener', async () => {
     expect(listenerMap.get('fetch')?.size).toBe(1)

@@ -1,3 +1,3 @@
-import { createServer } from '@graphql-yoga/node'
+import { createYoga } from '@graphql-yoga/common'
 
 export const server = createServer()

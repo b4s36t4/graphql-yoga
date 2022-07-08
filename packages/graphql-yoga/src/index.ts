@@ -2,7 +2,8 @@ import yargs from 'yargs'
 import { hideBin } from 'yargs/helpers'
 import { GraphQLExtensionDeclaration, loadConfig } from 'graphql-config'
 import { CodeFileLoader } from '@graphql-tools/code-file-loader'
-import { createServer } from '@graphql-yoga/node'
+import { createYoga } from '@graphql-yoga/common'
+import { createServer } from 'http'
 import { addMocksToSchema } from '@graphql-tools/mock'
 
 const terminateEvents = ['SIGINT', 'SIGTERM']
@@ -66,14 +67,15 @@ export function graphqlYoga() {
         }
       }
       console.log(`Building GraphQL Server`)
-      const graphQLServer = createServer({
+      const yoga = createYoga({
         schema,
       })
+      const server = createServer(yoga)
       console.log(`Starting GraphQL Server`)
-      await graphQLServer.start()
+      server.listen(4000)
 
       registerTerminateHandler(() => {
-        graphQLServer.stop()
+        server.close()
       })
     },
   ).argv

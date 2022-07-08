@@ -7,19 +7,20 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as os from 'os'
 import * as crypto from 'crypto'
-import { CORSOptions, createServer, GraphQLYogaError } from '../src/index.js'
+import { CORSOptions, createYoga, GraphQLYogaError } from '../src/index.js'
 import { getCounterValue, schema } from '../test-utils/schema.js'
 import { createTestSchema } from './__fixtures__/schema.js'
 import { renderGraphiQL } from '@graphql-yoga/render-graphiql'
 import 'json-bigint-patch'
-import http from 'http'
+import http, { createServer, IncomingMessage } from 'http'
 import { useLiveQuery } from '@envelop/live-query'
 import { InMemoryLiveQueryStore } from '@n1ru4l/in-memory-live-query-store'
-import { fetch, File, FormData } from 'cross-undici-fetch'
+import { create, fetch, File, FormData } from 'cross-undici-fetch'
+import { ServerResponse } from 'http'
 
 describe('Disable Introspection with plugin', () => {
   it('succeeds introspection query', async () => {
-    const yoga = createServer({ schema, logging: false })
+    const yoga = createYoga({ schema, logging: false })
     const response = await request(yoga).post('/graphql').send({
       query: getIntrospectionQuery(),
     })
@@ -31,7 +32,7 @@ describe('Disable Introspection with plugin', () => {
   })
 
   it('fails introspection query with useDisableIntrospection', async () => {
-    const yoga = createServer({
+    const yoga = createYoga({
       schema,
       logging: false,
       // @ts-ignore
@@ -90,7 +91,7 @@ describe('Masked Error Option', () => {
   })
 
   it('should mask error', async () => {
-    const yoga = createServer({
+    const yoga = createYoga({
       schema,
       maskedErrors: true,
       logging: false,
@@ -108,7 +109,7 @@ describe('Masked Error Option', () => {
   })
 
   it('should mask error with custom message', async () => {
-    const yoga = createServer({
+    const yoga = createYoga({
       schema,
       maskedErrors: { errorMessage: 'Hahahaha' },
       logging: false,
@@ -126,7 +127,7 @@ describe('Masked Error Option', () => {
   })
 
   it('should mask errors by default', async () => {
-    const yoga = createServer({
+    const yoga = createYoga({
       schema,
       logging: false,
     })
@@ -143,7 +144,7 @@ describe('Masked Error Option', () => {
   })
 
   it('includes the original error in the extensions in dev mode (isDev flag)', async () => {
-    const yoga = createServer({
+    const yoga = createYoga({
       schema,
       logging: false,
       maskedErrors: {
@@ -169,7 +170,7 @@ describe('Masked Error Option', () => {
   })
   it('includes the original error in the extensions in dev mode (NODE_ENV=development)', async () => {
     process.env.NODE_ENV = 'development'
-    const yoga = createServer({
+    const yoga = createYoga({
       schema,
       logging: false,
     })
@@ -194,7 +195,7 @@ describe('Masked Error Option', () => {
 
 describe('Context error', () => {
   it('Error thrown within context factory without error masking is not swallowed and does not include stack trace', async () => {
-    const yoga = createServer({
+    const yoga = createYoga({
       logging: false,
       maskedErrors: false,
       context: () => {
@@ -219,7 +220,7 @@ describe('Context error', () => {
   })
 
   it('Error thrown within context factory with error masking is masked', async () => {
-    const yoga = createServer({
+    const yoga = createYoga({
       logging: false,
       context: () => {
         throw new Error('I like turtles')
@@ -243,7 +244,7 @@ describe('Context error', () => {
   })
 
   it('GraphQLYogaError thrown within context factory with error masking is not masked', async () => {
-    const yoga = createServer({
+    const yoga = createYoga({
       logging: false,
       context: () => {
         throw new GraphQLYogaError('I like turtles')
@@ -267,7 +268,7 @@ describe('Context error', () => {
   })
 
   it('GraphQLYogaError thrown within context factory has error extensions exposed on the response', async () => {
-    const yoga = createServer({
+    const yoga = createYoga({
       logging: false,
       context: () => {
         throw new GraphQLYogaError('I like turtles', { foo: 1 })
@@ -294,14 +295,16 @@ describe('Context error', () => {
 })
 
 it('parse error is sent to clients', async () => {
-  const server = createServer({
+  const yoga = createYoga({
     logging: false,
   })
 
-  try {
-    await server.start()
+  const server = createServer(yoga)
 
-    const result = await fetch(server.getServerUrl(), {
+  try {
+    server.listen(4000)
+
+    const result = await fetch('http://localhost:4000/graphql', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -327,19 +330,21 @@ it('parse error is sent to clients', async () => {
       }
     `)
   } finally {
-    await server.stop()
+    server.close()
   }
 })
 
 it('validation error is sent to clients', async () => {
-  const server = createServer({
+  const yoga = createYoga({
     logging: false,
   })
 
-  try {
-    await server.start()
+  const server = createServer(yoga)
 
-    const result = await fetch(server.getServerUrl(), {
+  try {
+    server.listen(4000)
+
+    const result = await fetch('http://localhost:4000/graphql', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -365,13 +370,13 @@ it('validation error is sent to clients', async () => {
       }
     `)
   } finally {
-    await server.stop()
+    server.close()
   }
 })
 
 describe('Requests', () => {
   const endpoint = '/test-graphql'
-  const yoga = createServer({ schema, logging: false, endpoint })
+  const yoga = createYoga({ schema, logging: false, endpoint })
 
   it('should reject other paths if specific endpoint path is provided', async () => {
     const response = await request(yoga).get('/graphql')
@@ -542,19 +547,22 @@ describe('Requests', () => {
 })
 
 describe('Incremental Delivery', () => {
-  const yoga = createServer({
+  const yoga = createYoga({
     schema,
     logging: false,
     maskedErrors: false,
-    multipart: {
-      fileSize: 12,
-    },
+    fetchAPI: create({
+      formDataLimits: {
+        fileSize: 12,
+      },
+    }),
   })
+  const server = createServer(yoga)
   beforeAll(() => {
-    return yoga.start()
+    server.listen(4000)
   })
   afterAll(() => {
-    return yoga.stop()
+    server.close()
   })
   it('should upload a file', async () => {
     const UPLOAD_MUTATION = /* GraphQL */ `
@@ -576,7 +584,7 @@ describe('Incremental Delivery', () => {
     formData.set('map', JSON.stringify({ 0: ['variables.file'] }))
     formData.set('0', new File([fileContent], fileName, { type: fileType }))
 
-    const response = await fetch(yoga.getServerUrl(), {
+    const response = await fetch('http://localhost:4000/graphql', {
       method: 'POST',
       body: formData,
     })
@@ -605,7 +613,7 @@ describe('Incremental Delivery', () => {
     formData.set('map', JSON.stringify({ 0: ['variables.file'] }))
     formData.set('0', new File([fileContent], fileName, { type: fileType }))
 
-    const response = await fetch(yoga.getServerUrl(), {
+    const response = await fetch('http://localhost:4000/graphql', {
       method: 'POST',
       body: formData,
     })
@@ -632,7 +640,7 @@ describe('Incremental Delivery', () => {
     formData.set('map', JSON.stringify({ 0: ['variables.file'] }))
     formData.set('0', new File([fileContent], fileName, { type: fileType }))
 
-    const response = await fetch(yoga.getServerUrl(), {
+    const response = await fetch('http://localhost:4000/graphql', {
       method: 'POST',
       body: formData,
     })
@@ -662,7 +670,7 @@ describe('Incremental Delivery', () => {
     formData.set('operations', JSON.stringify({ query: UPLOAD_MUTATION }))
     formData.set('map', JSON.stringify({ 0: ['variables.file'] }))
     formData.set('0', new File([fileContent], fileName, { type: fileType }))
-    const response = await fetch(yoga.getServerUrl(), {
+    const response = await fetch('http://localhost:4000/graphql', {
       method: 'POST',
       body: formData,
     })
@@ -676,7 +684,7 @@ describe('Incremental Delivery', () => {
   })
 
   it('should get subscription', async () => {
-    const serverUrl = yoga.getServerUrl()
+    const serverUrl = 'http://localhost:4000/graphql'
 
     const eventSource = new EventSource(
       `${serverUrl}?query=subscription{counter}`,
@@ -732,7 +740,7 @@ describe('file uploads', () => {
     const id = crypto.randomBytes(20).toString('hex')
     const targetFilePath = path.join(os.tmpdir(), `${id}.png`)
 
-    const server = createServer({
+    const yoga = createYoga({
       schema: {
         resolvers: {
           Mutation: {
@@ -758,9 +766,10 @@ describe('file uploads', () => {
       },
       logging: false,
     })
+    const server = createServer(yoga)
 
     try {
-      await server.start()
+      server.listen(4000)
 
       const formData = new FormData()
       formData.set(
@@ -782,7 +791,7 @@ describe('file uploads', () => {
         ),
       )
 
-      const response = await fetch(server.getServerUrl(), {
+      const response = await fetch('http://localhost:4000/graphql', {
         method: 'POST',
         body: formData,
       })
@@ -798,13 +807,13 @@ describe('file uploads', () => {
       console.log(targetMd5, sourceMd5)
       fs.promises.unlink(targetFilePath)
     } finally {
-      await server.stop()
+      server.close()
     }
   })
 })
 
 describe('health checks', () => {
-  const yogaApp = createServer({
+  const yogaApp = createYoga({
     logging: false,
   })
   it('should return 200 status code for health check endpoint', async () => {
@@ -820,7 +829,10 @@ describe('health checks', () => {
 })
 
 it('should expose Node req and res objects in the context', async () => {
-  const yoga = createServer({
+  const yoga = createYoga<{
+    req: IncomingMessage
+    res: ServerResponse
+  }>({
     schema: {
       typeDefs: /* GraphQL */ `
         type Query {
@@ -855,7 +867,7 @@ describe('Browser', () => {
   const liveQueryStore = new InMemoryLiveQueryStore()
   const endpoint = '/test-graphql'
   let cors: CORSOptions = {}
-  const yogaApp = createServer({
+  const yogaApp = createYoga({
     schema: createTestSchema(),
     cors: () => cors,
     logging: false,
@@ -874,8 +886,10 @@ describe('Browser', () => {
   const playButtonSelector = `[d="M 11 9 L 24 16 L 11 23 z"]`
   const stopButtonSelector = `[d="M 10 10 L 23 10 L 23 23 L 10 23 z"]`
 
+  const server = createServer(yogaApp)
+
   beforeAll(async () => {
-    await yogaApp.start()
+    server.listen(4000)
     browser = await puppeteer.launch({
       // If you wanna run tests with open browser
       // set your PUPPETEER_HEADLESS env to "false"
@@ -892,7 +906,7 @@ describe('Browser', () => {
   })
   afterAll(async () => {
     await browser.close()
-    await yogaApp.stop()
+    server.close()
   })
 
   const typeOperationText = async (text: string) => {

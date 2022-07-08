@@ -1,6 +1,4 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { Readable } from 'stream'
-import type { AddressInfo } from './types.js'
 import type { Socket } from 'node:net'
 import { isAsyncIterable } from '@graphql-tools/utils'
 
@@ -17,10 +15,7 @@ export interface NodeRequest {
   query?: any
 }
 
-function getRequestAddressInfo(
-  nodeRequest: NodeRequest,
-  defaultAddressInfo: AddressInfo,
-): AddressInfo {
+function buildFullUrl(nodeRequest: NodeRequest) {
   const hostname =
     nodeRequest.hostname ||
     nodeRequest.socket?.localAddress
@@ -29,23 +24,13 @@ function getRequestAddressInfo(
       ?.split(':')
       ?.join('') ||
     nodeRequest.headers?.host?.split(':')[0] ||
-    defaultAddressInfo.hostname ||
     'localhost'
 
-  const port = nodeRequest.socket?.localPort || defaultAddressInfo.port || 80
+  const port = nodeRequest.socket?.localPort || 80
+  const protocol = nodeRequest.protocol || 'http'
+  const endpoint = nodeRequest.url || '/graphql'
 
-  return {
-    protocol: (nodeRequest.protocol ||
-      defaultAddressInfo.protocol ||
-      'http') as 'http',
-    hostname,
-    endpoint: nodeRequest.url || defaultAddressInfo.endpoint,
-    port,
-  }
-}
-
-function buildFullUrl(addressInfo: AddressInfo) {
-  return `${addressInfo.protocol}://${addressInfo.hostname}:${addressInfo.port}${addressInfo.endpoint}`
+  return `${protocol}://${hostname}:${port}${endpoint}`
 }
 
 function configureSocket(rawRequest: NodeRequest) {
@@ -56,13 +41,11 @@ function configureSocket(rawRequest: NodeRequest) {
 
 export function getNodeRequest(
   nodeRequest: NodeRequest,
-  defaultAddressInfo: AddressInfo,
   RequestCtor: typeof Request,
 ): Request {
   const rawRequest = nodeRequest.raw || nodeRequest.req || nodeRequest
   configureSocket(rawRequest)
-  const addressInfo = getRequestAddressInfo(rawRequest, defaultAddressInfo)
-  const fullUrl = buildFullUrl(addressInfo)
+  const fullUrl = buildFullUrl(rawRequest)
   if (nodeRequest.query) {
     const urlObj = new URL(fullUrl)
     for (const queryName in nodeRequest.query) {
@@ -125,11 +108,7 @@ export function getNodeRequest(
   })
 }
 
-function isReadable(responseBody: any): responseBody is Readable {
-  return !!responseBody.pipe
-}
-
-export function sendNodeResponse(
+export async function sendNodeResponse(
   { headers, status, statusText, body }: Response,
   serverResponse: ServerResponse,
 ) {
@@ -146,10 +125,10 @@ export function sendNodeResponse(
     serverResponse.end(body)
     return Promise.resolve()
   }
-  const nodeStream = isReadable(body) ? body : Readable.from(body)
-  const promise = new Promise<void>((resolve) =>
-    nodeStream.once('end', resolve),
-  )
-  nodeStream.pipe(serverResponse)
-  return promise
+  for await (const chunk of body) {
+    if (!serverResponse.write(chunk)) {
+      return
+    }
+  }
+  serverResponse.end()
 }

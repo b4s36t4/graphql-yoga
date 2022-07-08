@@ -31,7 +31,7 @@ import {
   RequestParser,
   ResultProcessor,
 } from './plugins/types.js'
-import * as crossUndiciFetch from 'cross-undici-fetch'
+import { create as createFetchAPI } from 'cross-undici-fetch'
 import { processRequest as processGraphQLParams } from './processRequest.js'
 import { defaultYogaLogger, titleBold, YogaLogger } from './logger.js'
 import { CORSPluginOptions, useCORS } from './plugins/useCORS.js'
@@ -78,6 +78,8 @@ import { useCheckMethodForGraphQL } from './plugins/requestValidation/useCheckMe
 import { useCheckGraphQLQueryParam } from './plugins/requestValidation/useCheckGraphQLQueryParam.js'
 import { useHTTPValidationError } from './plugins/requestValidation/useHTTPValidationError.js'
 import { usePreventMutationViaGET } from './plugins/requestValidation/usePreventMutationViaGET.js'
+import { getNodeRequest, NodeRequest, sendNodeResponse } from './node-utils.js'
+import type { RequestListener, IncomingMessage, ServerResponse } from 'http'
 
 interface OptionsWithPlugins<TContext> {
   /**
@@ -228,13 +230,9 @@ export class YogaServer<
     options?: YogaServerOptions<TServerContext, TUserContext, TRootValue>,
   ) {
     this.id = options?.id ?? 'yoga'
-    this.fetchAPI = {
-      Request: options?.fetchAPI?.Request ?? crossUndiciFetch.Request,
-      Response: options?.fetchAPI?.Response ?? crossUndiciFetch.Response,
-      fetch: options?.fetchAPI?.fetch ?? crossUndiciFetch.fetch,
-      ReadableStream:
-        options?.fetchAPI?.ReadableStream ?? crossUndiciFetch.ReadableStream,
-    }
+    this.fetchAPI = createFetchAPI({
+      useNodeFetch: true,
+    })
     const schema = options?.schema
       ? isSchema(options.schema)
         ? options.schema
@@ -622,27 +620,44 @@ export class YogaServer<
     return this.handleRequest(request, init as any)
   }
 
-  // FetchEvent is not available in all envs
-  private fetchEventListener = (event: FetchEvent) =>
-    event.respondWith(this.handleRequest(event.request, event as any))
-
-  start() {
-    self.addEventListener('fetch', this.fetchEventListener as EventListener)
+  handleEvent = (event: FetchEvent) => {
+    if (!event.respondWith || !event.request) {
+      throw new TypeError(`Expected FetchEvent, got ${event}`)
+    }
+    const response$ = this.handleRequest(event.request, event as any)
+    event.respondWith(response$)
   }
 
-  stop() {
-    self.removeEventListener('fetch', this.fetchEventListener as EventListener)
+  handleIncomingMessage(
+    nodeRequest: NodeRequest,
+    serverContext: TServerContext,
+  ): Promise<Response> {
+    this.logger.debug(`Processing Node Request`)
+    const request = getNodeRequest(nodeRequest, this.fetchAPI.Request)
+    return this.handleRequest(request, serverContext)
   }
+
+  requestListener: RequestListener = async (
+    req: IncomingMessage,
+    res: ServerResponse,
+  ) => {
+    const response = await this.handleIncomingMessage(req, { req, res } as any)
+    this.logger.debug('Passing Response back to Node')
+    await sendNodeResponse(response, res)
+  }
+
+  handle = this.requestListener
 }
 
 export type YogaServerInstance<TServerContext, TUserContext, TRootValue> =
   YogaServer<TServerContext, TUserContext, TRootValue> &
+    RequestListener &
     (
       | WindowOrWorkerGlobalScope['fetch']
       | ((context: { request: Request }) => Promise<Response>)
     )
 
-export function createServer<
+export function createYoga<
   TServerContext extends Record<string, any> = {},
   TUserContext extends Record<string, any> = {},
   TRootValue = {},
@@ -654,6 +669,10 @@ export function createServer<
   )
   // TODO: Will be removed once we get rid of classes
   const fnHandler = (input: any, ctx: any) => {
+    // If it is a Node request
+    if (input.on && ctx?.on) {
+      return server.requestListener(input, ctx)
+    }
     // Is input a container object over Request?
     if (input.request) {
       // In this input is also the context
